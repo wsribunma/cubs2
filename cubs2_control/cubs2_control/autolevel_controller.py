@@ -43,15 +43,24 @@ class AutolevelController:
     mode: float = input_var(desc='mode: 0=manual, 1=stabilized')
 
     # === Parameters ===
-    # Outer loop: angle control (slow, 1-3 Hz)
-    Kp_phi: float = param(2.5, desc='P gain roll angle (per rad)')
-    Kp_theta: float = param(2.0, desc='P gain pitch angle (per rad)')
+    # Rate command sensitivity (how much stick deflection causes rate change)
+    # Stick-to-rate scaling (rad/s per full stick)
+    stick_rate_scale_phi: float = param(3.5 * np.pi, desc='stick to roll rate (rad/s)')
+    stick_rate_scale_theta: float = param(2.0 * np.pi, desc='stick to pitch rate (rad/s)')
+    
+    # Outer loop: auto-level gains (smooth return to level when stick centered)
+    Kp_phi: float = param(3.0, desc='P gain roll auto-level (per rad error)')
+    Kp_theta: float = param(2.0, desc='P gain pitch auto-level (per rad error)')
 
-    # Inner loop: rate damping (fast, 15-25 rad/s)
-    Kp_p: float = param(0.6, desc='P gain roll rate (per rad/s)')
-    Ki_p: float = param(0.0, desc='I gain roll rate')
-    Kp_q: float = param(0.6, desc='P gain pitch rate (per rad/s)')
-    Ki_q: float = param(0.0, desc='I gain pitch rate')
+    # Inner loop: rate tracking (gyro-based, fast stabilization)
+    Kp_p: float = param(0.5, desc='P gain roll rate tracking')
+    Ki_p: float = param(0.15, desc='I gain roll rate tracking')
+    Kp_q: float = param(0.3, desc='P gain pitch rate tracking')
+    Ki_q: float = param(0.1, desc='I gain pitch rate tracking')
+    
+    # Manual mode gyro damping (gentle - helps with oscillations)
+    Kd_p_manual: float = param(0.15, desc='damping roll rate in manual mode')
+    Kd_q_manual: float = param(0.15, desc='damping pitch rate in manual mode')
 
     # Yaw damping (passive)
     Kp_r: float = param(0.3, desc='P gain yaw rate damping')
@@ -64,10 +73,6 @@ class AutolevelController:
     trim_aileron: float = param(0.0, desc='aileron trim offset (rad)')
     trim_elevator: float = param(0.0, desc='elevator trim offset (rad)')
     trim_rudder: float = param(0.0, desc='rudder trim offset (rad)')
-
-    # Stick to attitude mapping
-    stick_to_phi: float = param(np.deg2rad(45), desc='aileron stick to roll ref (rad)')
-    stick_to_theta: float = param(np.deg2rad(20), desc='elevator stick to pitch ref (rad)')
 
     # Limits
     phi_max: float = param(np.deg2rad(50), desc='max bank angle (rad)')
@@ -131,54 +136,89 @@ def autolevel_controller() -> Model:
     # Airspeed from velocity
     speed_meas = cy.norm_2(m.vel.sym)
 
-    # In stabilized mode, map stick inputs to attitude references
-    phi_ref_from_stick = m.ail_manual.sym * m.stick_to_phi.sym
-    theta_ref_from_stick = m.elev_manual.sym * m.stick_to_theta.sym
+    # SAFE/AS3X Style Stabilization:
+    # In stabilized mode, stick commands RATE; autopilot auto-levels when stick centered
+    # This is rate-based stabilization + automatic leveling, not attitude hold
+    
+    # Stick input to desired rate commands (pilot commands rate directly)
+    p_cmd_stick = m.ail_manual.sym * m.stick_rate_scale_phi.sym
+    q_cmd_stick = m.elev_manual.sym * m.stick_rate_scale_theta.sym
+    
+    # Auto-level: when stick is centered, command returns to level attitude
+    # Proportional feedback from ACTUAL attitude error to drive back to level (0°)
+    # This ensures wings-level return regardless of current bank/pitch
+    p_cmd_level = -m.Kp_phi.sym * phi  # Roll error: always drives to phi=0 (wings-level)
+    q_cmd_level = -m.Kp_theta.sym * theta  # Pitch error: always drives to theta=0 (level)
+    
+    # Apply angle limits to STICK commands in stabilized mode (only limit pilot input)
+    # If near max bank angle, reduce stick authority to prevent exceeding limit
+    # Margin factor: 0.9 = start limiting at 90% of max angle
+    angle_margin = 0.9
+    phi_saturation_factor = cy.fmin(1.0, (m.phi_max.sym - cy.fabs(phi)) / (m.phi_max.sym * (1.0 - angle_margin)))
+    theta_saturation_factor = cy.fmin(1.0, (m.theta_max.sym - cy.fabs(theta)) / (m.theta_max.sym * (1.0 - angle_margin)))
+    
+    # Limit stick-commanded rates by saturation factor (soft limit on pilot input)
+    p_cmd_stick_limited = p_cmd_stick * phi_saturation_factor
+    q_cmd_stick_limited = q_cmd_stick * theta_saturation_factor
+    
+    # In stabilized mode: blend LIMITED stick rate commands with auto-level
+    # Auto-level is NEVER saturated - it always tries to level wings
+    # In manual mode: stick directly controls surfaces
+    p_cmd = p_cmd_stick_limited * (1.0 - m.mode.sym) + (p_cmd_stick_limited + p_cmd_level) * m.mode.sym
+    q_cmd = q_cmd_stick_limited * (1.0 - m.mode.sym) + (q_cmd_stick_limited + q_cmd_level) * m.mode.sym
 
-    # Saturate reference angles to max limits
-    phi_ref_sat = _saturate(phi_ref_from_stick, -m.phi_max.sym, m.phi_max.sym)
-    theta_ref_sat = _saturate(theta_ref_from_stick, -m.theta_max.sym, m.theta_max.sym)
+    # Inner loop: rate tracking (gyro-based rate damping)
+    # Always active in stabilized mode to track commanded rates
+    e_p = (p_cmd - p_meas) * m.mode.sym  # Rate error (only in stabilized)
+    e_q = (q_cmd - q_meas) * m.mode.sym  # Rate error (only in stabilized)
+    
+    # In manual mode, provide some gyro damping to improve handling
+    e_p_manual = -m.Kp_p.sym * p_meas  # Damping proportional to rate
+    e_q_manual = -m.Kp_q.sym * q_meas  # Damping proportional to rate
 
-    # Outer loop: angle errors -> rate commands
-    e_phi = phi_ref_sat - phi
-    e_theta = theta_ref_sat - theta
-
-    p_cmd = m.Kp_phi.sym * e_phi
-    q_cmd = m.Kp_theta.sym * e_theta
-
-    # Inner loop: rate errors
-    e_p = p_cmd - p_meas
-    e_q = q_cmd - q_meas
-
-    # ODEs: Integral states (only accumulate in stabilized mode)
+    # ODEs: Integral states for rate tracking (only in stabilized mode)
     model.ode(m.i_p, e_p * m.mode.sym)
     model.ode(m.i_q, e_q * m.mode.sym)
 
-    # Stabilized mode control outputs
+    # Stabilized mode control outputs (rate-based)
+    # PID rate controller to track commanded rates
+    ail_attitude_fb = -1.5 * phi  # Direct roll error feedback (only for roll leveling)
+    
     ail_stabilized = _saturate(
-        m.Kp_p.sym * e_p + m.Ki_p.sym * m.i_p.sym,
+        m.Kp_p.sym * e_p + m.Ki_p.sym * m.i_p.sym + ail_attitude_fb,
         m.ail_min.sym, m.ail_max.sym
     )
     elev_stabilized = _saturate(
         m.Kp_q.sym * e_q + m.Ki_q.sym * m.i_q.sym,
         m.elev_min.sym, m.elev_max.sym
     )
+    
+    # Manual mode outputs (direct pass-through + gentle gyro damping)
+    ail_manual_out = m.ail_manual.sym + e_p_manual
+    elev_manual_out = m.elev_manual.sym + e_q_manual
     rud_stabilized = _saturate(-m.Kp_r.sym * r_meas, m.rud_min.sym, m.rud_max.sym)
     e_speed = m.speed_ref.sym - speed_meas
     thr_stabilized = _saturate(m.Kp_speed.sym * e_speed, m.thr_min.sym, m.thr_max.sym)
 
-    # Mode switch: 0 = manual (pass-through), 1 = stabilized (autopilot)
-    # Apply trim offsets to all outputs
+    # Mode switch: 0 = manual (direct + damping), 1 = stabilized (rate-based auto-level)
+    # Aileron/Elevator: switch between manual and stabilized
     ail_out = (
-        m.ail_manual.sym * (1.0 - m.mode.sym) + ail_stabilized * m.mode.sym
+        _saturate(ail_manual_out, m.ail_min.sym, m.ail_max.sym) * (1.0 - m.mode.sym) +
+        ail_stabilized * m.mode.sym
     ) + m.trim_aileron.sym
+    
     elev_out = (
-        m.elev_manual.sym * (1.0 - m.mode.sym) + elev_stabilized * m.mode.sym
+        _saturate(elev_manual_out, m.elev_min.sym, m.elev_max.sym) * (1.0 - m.mode.sym) +
+        elev_stabilized * m.mode.sym
     ) + m.trim_elevator.sym
+    
+    # Rudder: yaw damping in both modes
     rud_out = (
         m.rud_manual.sym * (1.0 - m.mode.sym) + rud_stabilized * m.mode.sym
     ) + m.trim_rudder.sym
-    thr_out = m.thr_manual.sym * (1.0 - m.mode.sym) + thr_stabilized * m.mode.sym
+    
+    # Throttle: pilot always controls throttle directly
+    thr_out = m.thr_manual.sym
 
     # Define outputs
     model.output(m.ail, ail_out)

@@ -16,6 +16,7 @@
 from beartype import beartype
 from builtin_interfaces.msg import Time
 import casadi as ca
+from cubs2_control.autolevel_controller import autolevel_controller
 from cubs2_dynamics.sportcub import sportcub
 from cubs2_msgs.msg import AircraftControl
 from cubs2_simulation.markers import create_force_arrow
@@ -94,10 +95,26 @@ class SimNode(Node):
         self.paused_publisher = self.create_publisher(Bool, '/sat/paused', 10)
 
         # Initialize model
-        self.get_logger().info('Initializing sportcub model')
-        self.model = sportcub()
+        self.get_logger().info('Initializing sportcub model with autolevel controller')
+        self.aircraft = sportcub()
+        self.controller = autolevel_controller()
+        self.model = self.aircraft
 
         self.y = self.model.y_current  # computed at end of each step
+
+        # Initialize controller state variables
+        # Controller states: i_p (roll rate integral), i_q (pitch rate integral)
+        self.controller.v0.i_p = 0.0
+        self.controller.v0.i_q = 0.0
+
+        # Controller mode: 0 = manual, 1 = stabilized
+        self.controller_mode = 0
+        
+        # Manual control inputs (from gamepad/joystick)
+        self.manual_ail = 0.0
+        self.manual_elev = 0.0
+        self.manual_rud = 0.0
+        self.manual_thr = 0.0
 
         # Apply initial state (position, orientation, and control inputs)
         self.apply_initial_state()
@@ -123,11 +140,18 @@ class SimNode(Node):
         """Step the simulation and publish transforms and diagnostics."""
         self.sim_time += self.dt
 
-        # Use closed-loop model (aircraft + controller)
-        # Simulate one step forward using the simulate method
-
+        # Simulate aircraft with controller one step forward
         try:
-            self.model.simulate(
+            # Step controller to update its state (integral terms)
+            self.controller.simulate(
+                t0=self.sim_time - self.dt,
+                tf=self.sim_time,
+                dt=self.dt,
+                u_func=self._get_controller_inputs,
+            )
+            
+            # Step aircraft dynamics
+            self.aircraft.simulate(
                 t0=self.sim_time - self.dt,
                 tf=self.sim_time,
                 dt=self.dt,
@@ -141,7 +165,7 @@ class SimNode(Node):
             return
 
         # Update propeller angle for animation
-        thr_value = self.model.v0.thr
+        thr_value = self.aircraft.v0.thr
         propeller_rpm = thr_value * 2000.0  # Max 2000 RPM at full throttle
         propeller_omega = propeller_rpm * 2.0 * np.pi / 60.0  # Convert to rad/s
         self.propeller_angle += propeller_omega * self.dt
@@ -149,27 +173,85 @@ class SimNode(Node):
 
         self.publish_state()
 
-    def _get_control_inputs(self, t, model):
+    def _get_controller_inputs(self, t, model):
         """
-        Get control inputs for the model.
+        Get controller inputs from current aircraft state.
+        
+        Provides quaternion, angular velocity, velocity, manual inputs, and mode to the controller.
 
-        Returns 4 inputs: ail, elev, rud, thr
+        Returns
+        -------
+        casadi.vertcat
+            Controller inputs: [q0, q1, q2, q3, p, q, r, vx, vy, vz, ail_manual, elev_manual, rud_manual, thr_manual, mode]
         """
+        # Get current aircraft state
+        q = self.aircraft.y_current.q  # Quaternion (output)
+        omega = self.aircraft.v0.w  # Angular velocity (body frame state)
+        vel = self.aircraft.v0.v  # Velocity (ENU frame state)
+        
         return ca.vertcat(
-            model.v0.ail,
-            model.v0.elev,
-            model.v0.rud,
-            model.v0.thr
+            q[0], q[1], q[2], q[3],  # Quaternion (4)
+            omega[0], omega[1], omega[2],  # Angular velocity (3)
+            vel[0], vel[1], vel[2],  # Velocity (3)
+            self.manual_ail,  # Manual aileron
+            self.manual_elev,  # Manual elevator
+            self.manual_rud,  # Manual rudder
+            self.manual_thr,  # Manual throttle
+            float(self.controller_mode)  # Flight mode
         )
 
+    def _get_control_inputs(self, t, model):
+        """
+        Get control inputs for the aircraft model.
+        
+        Runs the autolevel controller with current aircraft state and manual inputs,
+        returns 4 control outputs: ail, elev, rud, thr
+
+        Returns
+        -------
+        casadi.vertcat
+            4 control inputs: [aileron, elevator, rudder, throttle]
+        """
+        # Update controller inputs with current aircraft state
+        self.controller.u0.q = self.aircraft.y_current.q
+        self.controller.u0.omega = self.aircraft.v0.w  # Angular velocity from state
+        self.controller.u0.vel = self.aircraft.v0.v  # Velocity ENU
+        
+        # Manual control inputs to controller
+        self.controller.u0.ail_manual = self.manual_ail
+        self.controller.u0.elev_manual = self.manual_elev
+        self.controller.u0.rud_manual = self.manual_rud
+        self.controller.u0.thr_manual = self.manual_thr
+        
+        # Flight mode (0 = manual, 1 = stabilized)
+        self.controller.u0.mode = float(self.controller_mode)
+        
+        # Get controller outputs (blended based on mode)
+        ail_out = self.controller.y_current.ail
+        elev_out = self.controller.y_current.elev
+        rud_out = self.controller.y_current.rud
+        thr_out = self.controller.y_current.thr
+        
+        # Update aircraft model inputs with controller outputs
+        self.aircraft.v0.ail = ail_out
+        self.aircraft.v0.elev = elev_out
+        self.aircraft.v0.rud = rud_out
+        self.aircraft.v0.thr = thr_out
+        
+        return ca.vertcat(ail_out, elev_out, rud_out, thr_out)
+
+    @beartype
     @beartype
     def control_callback(self, msg: AircraftControl) -> None:
         """Handle AircraftControl messages."""
-        # Update model inputs
-        self.model.v0.ail = float(msg.aileron)
-        self.model.v0.elev = float(msg.elevator)
-        self.model.v0.thr = float(msg.throttle)
-        self.model.v0.rud = float(msg.rudder)
+        # Store manual control inputs
+        self.manual_ail = float(msg.aileron)
+        self.manual_elev = float(msg.elevator)
+        self.manual_thr = float(msg.throttle)
+        self.manual_rud = float(msg.rudder)
+        
+        # Extract flight mode (0 = manual, 1 = stabilized)
+        self.controller_mode = int(msg.mode)
 
     @beartype
     def pause_topic_callback(self, msg: Empty) -> None:
@@ -242,31 +324,31 @@ class SimNode(Node):
         qz = np.sin(half_yaw)
 
         # Apply to aircraft state
-        self.model.v0.p[0] = initial_x
-        self.model.v0.p[1] = initial_y
-        self.model.v0.p[2] = initial_z
+        self.aircraft.v0.p[0] = initial_x
+        self.aircraft.v0.p[1] = initial_y
+        self.aircraft.v0.p[2] = initial_z
 
         # Reset velocity to zero
-        self.model.v0.v[0] = 0.0
-        self.model.v0.v[1] = 0.0
-        self.model.v0.v[2] = 0.0
+        self.aircraft.v0.v[0] = 0.0
+        self.aircraft.v0.v[1] = 0.0
+        self.aircraft.v0.v[2] = 0.0
 
         # Set attitude quaternion
-        self.model.v0.r[0] = qw
-        self.model.v0.r[1] = qx
-        self.model.v0.r[2] = qy
-        self.model.v0.r[3] = qz
+        self.aircraft.v0.r[0] = qw
+        self.aircraft.v0.r[1] = qx
+        self.aircraft.v0.r[2] = qy
+        self.aircraft.v0.r[3] = qz
 
         # Reset angular velocity to zero
-        self.model.v0.w[0] = 0.0
-        self.model.v0.w[1] = 0.0
-        self.model.v0.w[2] = 0.0
+        self.aircraft.v0.w[0] = 0.0
+        self.aircraft.v0.w[1] = 0.0
+        self.aircraft.v0.w[2] = 0.0
 
         # Control inputs
-        self.model.v0.ail = 0.0
-        self.model.v0.elev = 0.0
-        self.model.v0.rud = 0.0
-        self.model.v0.thr = 0.0
+        self.aircraft.v0.ail = 0.0
+        self.aircraft.v0.elev = 0.0
+        self.aircraft.v0.rud = 0.0
+        self.aircraft.v0.thr = 0.0
 
     @beartype
     def get_sim_time_msg(self) -> Clock:
@@ -295,15 +377,15 @@ class SimNode(Node):
         stamp = sim_time_msg.clock
 
         # Publish force/moment markers every step
-        self.y = self.model.y_current
+        self.y = self.aircraft.y_current
         if self.show_forces:
             self.publish_force_moment_markers()
 
         # Extract state as numpy arrays for publishing
-        pos = np.array(self.model.v0.p).flatten()
-        q = np.array(self.model.v0.r).flatten()
-        vel = np.array(self.model.v0.v).flatten()
-        w = np.array(self.model.v0.w).flatten()
+        pos = np.array(self.aircraft.v0.p).flatten()
+        q = np.array(self.aircraft.v0.r).flatten()
+        vel = np.array(self.aircraft.v0.v).flatten()
+        w = np.array(self.aircraft.v0.w).flatten()
 
         # Publish pose using tf (position + orientation)
         t = TransformStamped()

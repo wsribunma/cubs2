@@ -61,6 +61,7 @@ public:
     aileron_ = aileron;
     elevator_ = elevator;
     update();
+    repaint();  // Force immediate repaint
   }
 
 Q_SIGNALS:
@@ -103,7 +104,8 @@ private Q_SLOTS:
   void publishControlInputs();
   void onResetClicked();
   void onEnabledChanged(int state);
-  void onModeChanged(int index);
+  void onOnboardModeChanged(int index);
+  void onInputModeChanged(int index);
 
 private:
   void controlCallback(const cubs2_msgs::msg::AircraftControl::SharedPtr msg);
@@ -124,7 +126,8 @@ private:
   QTimer * ros_spin_timer_{nullptr};
   QPushButton * reset_button_{nullptr};
   QCheckBox * enable_checkbox_{nullptr};
-  QComboBox * mode_combo_{nullptr};
+  QComboBox * onboard_mode_combo_{nullptr};
+  QComboBox * input_mode_combo_{nullptr};
 
   double aileron_{0.0};
   double elevator_{0.0};
@@ -133,7 +136,8 @@ private:
   double aileron_trim_{0.0};
   double elevator_trim_{0.0};
   bool enabled_{true};
-  int mode_{0};  // 0 = manual, 1 = stabilized
+  int onboard_mode_{0};  // 0 = manual, 1 = stabilized
+  int input_mode_{0};    // 0 = joystick, 1 = auto-autolevel
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::Publisher<cubs2_msgs::msg::AircraftControl>::SharedPtr joy_publisher_{nullptr};

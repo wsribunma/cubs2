@@ -190,18 +190,28 @@ JoyPanel::JoyPanel(QWidget * parent)
   layout->addLayout(header_layout);
   connect(enable_checkbox_, &QCheckBox::stateChanged, this, &JoyPanel::onEnabledChanged);
 
-  // Mode selector
+  // Onboard Mode selector
   auto * mode_layout = new QHBoxLayout;
-  mode_layout->addWidget(new QLabel("Mode:"));
-  mode_combo_ = new QComboBox();
-  mode_combo_->addItem("Manual");
-  mode_combo_->addItem("Stabilized");
-  mode_combo_->setCurrentIndex(0);
-  mode_layout->addWidget(mode_combo_);
+  mode_layout->addWidget(new QLabel("Onboard Mode:"));
+  onboard_mode_combo_ = new QComboBox();
+  onboard_mode_combo_->addItem("Manual");
+  onboard_mode_combo_->addItem("Stabilized");
+  onboard_mode_combo_->setCurrentIndex(0);
+  mode_layout->addWidget(onboard_mode_combo_);
+  
+  // Input Mode selector (Joystick / Auto-autolevel)
+  mode_layout->addWidget(new QLabel("Input Mode:"));
+  input_mode_combo_ = new QComboBox();
+  input_mode_combo_->addItem("Joystick");
+  input_mode_combo_->addItem("Auto-autolevel");
+  input_mode_combo_->setCurrentIndex(0);
+  mode_layout->addWidget(input_mode_combo_);
   mode_layout->addStretch();
   layout->addLayout(mode_layout);
-  connect(mode_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-          &JoyPanel::onModeChanged);
+  connect(onboard_mode_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &JoyPanel::onOnboardModeChanged);
+  connect(input_mode_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &JoyPanel::onInputModeChanged);
 
   // 2D Joystick for aileron/elevator
   joystick_ = new JoystickWidget(this);
@@ -343,11 +353,12 @@ void JoyPanel::publishControlInputs()
   control_msg.elevator = static_cast<float>(elevator_ + elevator_trim_);
   control_msg.throttle = static_cast<float>(throttle_);
   control_msg.rudder = static_cast<float>(rudder_);
+  control_msg.mode = static_cast<uint8_t>(onboard_mode_);
   joy_publisher_->publish(control_msg);
 
-  // Publish mode
+  // Also publish mode to /control_mode topic for backward compatibility
   std_msgs::msg::Float32 mode_msg;
-  mode_msg.data = static_cast<float>(mode_);
+  mode_msg.data = static_cast<float>(onboard_mode_);
   mode_publisher_->publish(mode_msg);
 }
 
@@ -376,31 +387,63 @@ void JoyPanel::onEnabledChanged(int state)
   aileron_trim_slider_->setEnabled(enabled_);
   elevator_trim_slider_->setEnabled(enabled_);
   reset_button_->setEnabled(enabled_);
-  mode_combo_->setEnabled(enabled_);
+  onboard_mode_combo_->setEnabled(enabled_);
+  input_mode_combo_->setEnabled(enabled_);
 
   // Don't disable the joystick widget - it needs to display external control
   // Just make it non-interactive when disabled
   joystick_->setAttribute(Qt::WA_TransparentForMouseEvents, !enabled_);
 }
 
-void JoyPanel::onModeChanged(int index)
+void JoyPanel::onOnboardModeChanged(int index)
 {
-  mode_ = index;  // 0 = manual, 1 = stabilized
+  onboard_mode_ = index;  // 0 = manual, 1 = stabilized
+  
+  // Publish mode change immediately when user toggles the combobox
+  if (node_) {
+    // Publish full AircraftControl message with updated mode
+    cubs2_msgs::msg::AircraftControl control_msg;
+    control_msg.header.stamp = node_->now();
+    control_msg.aileron = static_cast<float>(aileron_ + aileron_trim_);
+    control_msg.elevator = static_cast<float>(elevator_ + elevator_trim_);
+    control_msg.throttle = static_cast<float>(throttle_);
+    control_msg.rudder = static_cast<float>(rudder_);
+    control_msg.mode = static_cast<uint8_t>(onboard_mode_);
+    joy_publisher_->publish(control_msg);
+    
+    // Also publish mode to /control_mode topic for backward compatibility
+    std_msgs::msg::Float32 mode_msg;
+    mode_msg.data = static_cast<float>(onboard_mode_);
+    mode_publisher_->publish(mode_msg);
+  }
+}
+
+void JoyPanel::onInputModeChanged(int index)
+{
+  input_mode_ = index;  // 0 = joystick, 1 = auto-autolevel
+  // Input mode selection would be handled by controllers
+  // (gamepad passes through vs autolevel commands)
 }
 
 void JoyPanel::controlCallback(const cubs2_msgs::msg::AircraftControl::SharedPtr msg)
 {
-  // Only update display if disabled (showing external control)
-  if (!enabled_) {
-    updateDisplayFromExternal(msg->aileron, msg->elevator, msg->throttle, msg->rudder);
+  // Update mode combobox if changed from external source (gamepad, etc.)
+  if (static_cast<int>(msg->mode) != onboard_mode_) {
+    onboard_mode_ = static_cast<int>(msg->mode);
+    onboard_mode_combo_->blockSignals(true);
+    onboard_mode_combo_->setCurrentIndex(onboard_mode_);
+    onboard_mode_combo_->blockSignals(false);
   }
+  
+  // Always update display to show current control inputs
+  updateDisplayFromExternal(msg->aileron, msg->elevator, msg->throttle, msg->rudder);
 }
 
 void JoyPanel::updateDisplayFromExternal(
   double aileron, double elevator, double throttle,
   double rudder)
 {
-  // Update internal state (for display purposes only when disabled)
+  // Update internal state (for display purposes)
   aileron_ = aileron;
   elevator_ = elevator;
   throttle_ = throttle;
@@ -416,11 +459,14 @@ void JoyPanel::updateDisplayFromExternal(
   throttle_label_->setText(QString::number(throttle, 'f', 2));
   rudder_label_->setText(QString::number(rudder, 'f', 2));
 
-  // Update joystick widget position to show external control
-  joystick_->setPosition(aileron - aileron_trim_, elevator - elevator_trim_);
-
   throttle_slider_->blockSignals(false);
   rudder_slider_->blockSignals(false);
+
+  // Update joystick widget position to show external control
+  // The joystick display shows the stick position without trim
+  double ail_stick = aileron - aileron_trim_;
+  double elev_stick = elevator - elevator_trim_;
+  joystick_->setPosition(ail_stick, elev_stick);
 }
 
 }  // namespace cubs2
