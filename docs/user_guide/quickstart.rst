@@ -51,6 +51,44 @@ Examples:
    # Disable replay
    ros2 launch cubs2_bringup sim.xml replay:=false
 
+Hardware (PPM Bridge)
+---------------------
+
+To run the flight stack on real hardware with a physical transmitter and the PPM bridge:
+
+.. code-block:: bash
+
+   ros2 launch cubs2_bringup cubs2_hardware.xml
+
+This starts:
+
+* ``joy_node`` — reads the transmitter as a joystick (``control_manual``)
+* Two throttle components — rate-limit manual and auto control streams to 10 Hz
+* ``cubs2_ppm_bridge`` (``node4ch``) — forwards throttled control signals to the Arduino PPM driver over serial
+* ``cubs2_planning`` (Dubins planner) — runs the guidance layer
+
+Available arguments:
+
+* ``vehicle`` (default: ``cub1``) — ROS namespace for the vehicle
+* ``controller`` (default: ``taranis``) — transmitter type: ``taranis``, ``f310``, or ``ps4``
+* ``joy`` (default: ``true``) — enable joystick input
+* ``rviz`` (default: ``false``) — launch RViz2 with the hardware config
+* ``sim`` (default: ``false``) — use simulated clock
+* ``log_level`` (default: ``warn``) — ROS logging level
+
+Examples:
+
+.. code-block:: bash
+
+   # Different vehicle namespace and transmitter
+   ros2 launch cubs2_bringup cubs2_hardware.xml vehicle:=cub2 controller:=f310
+
+   # With RViz
+   ros2 launch cubs2_bringup cubs2_hardware.xml rviz:=true
+
+   # Disable joystick (autopilot only)
+   ros2 launch cubs2_bringup cubs2_hardware.xml joy:=false
+
 Visualization Only
 ------------------
 
