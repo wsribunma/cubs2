@@ -12,6 +12,18 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(cubs2_msgs REQUIRED)
 
+add_executable(node4ch src/ppm_bridge_node4ch.cpp)
+ament_target_dependencies(node4ch
+  rclcpp
+  sensor_msgs
+  std_msgs
+  cubs2_msgs
+)
+
+install(TARGETS node4ch
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights

@@ -11,6 +11,12 @@
     <!-- Configuration file with all tuning parameters -->
     <arg name="config_file" default="$(find-pkg-share cubs2_bringup)/config/sportcub.yaml"/>
 
+    <!-- Initial conditions (ENU metres + compass heading in degrees) -->
+    <arg name="init_x"           default="0.0"/>
+    <arg name="init_y"           default="0.0"/>
+    <arg name="init_z"           default="0.1"/>
+    <arg name="init_heading_deg" default="-30.0"/>
+
     <!-- Replay: recorded flight from rosbag (ghost plane for comparison) -->
     <executable
         cmd="ros2 bag play $(var bag_path)
@@ -43,6 +49,10 @@
     <node pkg="cubs2_simulation" exec="sim.py" output="screen">
         <param name="use_sim_time" value="false"/>
         <param from="$(var config_file)"/>
+        <param name="initial_position.x" value="$(var init_x)"/>
+        <param name="initial_position.y" value="$(var init_y)"/>
+        <param name="initial_position.z" value="$(var init_z)"/>
+        <param name="initial_yaw_deg"    value="$(var init_heading_deg)"/>
     </node>
 
     <!-- Vehicle: plane visualization -->

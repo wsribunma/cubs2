@@ -1,36 +1,17 @@
 <?xml version="1.0"?>
-<!--
-  cubs2_hw.launch.xml
-
-  Hardware flight-stack launch for the Sport Cub S 2.
-
-  Composition:
-    - joy_node (manual transmitter input)
-    - topic_tools throttles for manual + auto control streams
-    - cubs2_control  (autopilot, publishes AircraftControl on /control_auto)
-    - cubs2_planner  (mission/guidance layer)
-    - cubs2_ppm_bridge (serial-to-Arduino PPM driver)
-    - rviz2 with cubs2_bringup/config/cubs2_hw.rviz (optional)
-
-  Usage:
-    ros2 launch cubs2_bringup cubs2_hw.launch.xml
-    ros2 launch cubs2_bringup cubs2_hw.launch.xml vehicle:=cub1 controller:=taranis rviz:=true
--->
 <launch>
 
-  <!-- ========== Launch arguments ========== -->
   <arg name="sim"        default="false"    description="use simulated clock"/>
-  <arg name="rviz"       default="false"    description="launch rviz2 with cubs2_hw.rviz config"/> 
-  <!-- TODO: Add rviz config for hardware mode -->
+  <arg name="rviz"       default="false"    description="launch rviz2 with cubs2_hw.rviz config"/> <!-- TODO: Add Rviz config for hardware-->
   <arg name="joy"        default="true"     description="launch joystick node for manual control"/>
   <arg name="controller" default="taranis"  description="transmitter type: taranis | f310 | ps4"/>
   <arg name="log_level"  default="warn"     description="ROS logging level"/>
   <arg name="vehicle"    default="cub1"     description="vehicle id, used as ROS namespace"/>
+  <arg name="config_file" default="$(find-pkg-share cubs2_bringup)/config/sportcub.yaml"/>
 
   <group>
     <push-ros-namespace namespace="$(var vehicle)"/>
 
-    <!-- ==== Manual input ==== -->
     <node pkg="joy" exec="joy_node" name="control_manual"
           output="log" if="$(var joy)"
           on_exit="shutdown">
@@ -41,9 +22,7 @@
       <remap from="joy" to="control_manual"/>
     </node>
 
-    <!-- ==== Topic throttles ==== -->
-    <!-- Manual: /control_manual -> /control_manual_throttle (10 Hz) -->
-    <node_container name="joy_thr" pkg="rclcpp_components" exec="component_container" output="both">
+    <node_container name="joy_thr" pkg="rclcpp_components" exec="component_container" output="both" namespace="$(var vehicle)">
       <composable_node pkg="topic_tools" plugin="topic_tools::ThrottleNode" name="joy_throttle">
         <param name="throttle_type" value="messages"/>
         <param name="input_topic"   value="control_manual"/>
@@ -52,8 +31,7 @@
       </composable_node>
     </node_container>
 
-    <!-- Auto: /control_auto -> /control_auto_throttle (10 Hz) -->
-    <node_container name="auto_joy_thr" pkg="rclcpp_components" exec="component_container" output="both">
+    <node_container name="auto_joy_thr" pkg="rclcpp_components" exec="component_container" output="both" namespace="$(var vehicle)">
       <composable_node pkg="topic_tools" plugin="topic_tools::ThrottleNode" name="throttle">
         <param name="throttle_type" value="messages"/>
         <param name="input_topic"   value="control_auto"/>
@@ -62,20 +40,12 @@
       </composable_node>
     </node_container>
 
-    <!-- ==== Autopilot stack ==== -->
-    <node pkg="cubs2_planner" exec="cubs2_planner_node" name="planner"
+    <!-- <node pkg="cubs2_control" exec="auto_controller" name="auto_controller"
           output="log" on_exit="shutdown">
       <param name="use_sim_time" value="$(var sim)"/>
       <param name="vehicle_id"   value="$(var vehicle)"/>
-    </node>
+    </node> -->
 
-    <node pkg="cubs2_control" exec="cubs2_control_node" name="control"
-          output="log" on_exit="shutdown">
-      <param name="use_sim_time" value="$(var sim)"/>
-      <param name="vehicle_id"   value="$(var vehicle)"/>
-    </node>
-
-    <!-- ==== Hardware bridge ==== -->
     <node pkg="cubs2_ppm_bridge" exec="node4ch" name="bridge"
           output="log" on_exit="shutdown">
       <param name="use_sim_time"         value="$(var sim)"/>
@@ -88,7 +58,6 @@
       <remap from="auto_joy_throttle" to="control_auto_throttle"/>
     </node>
 
-    <!-- ==== Visualization ==== -->
     <node pkg="rviz2" exec="rviz2" name="rviz2"
           output="screen" if="$(var rviz)"
           args="-d $(find-pkg-share cubs2_bringup)/config/cubs2_hw.rviz"
@@ -97,5 +66,11 @@
     </node>
 
   </group>
+
+  <node pkg="cubs2_planning" exec="planner_dubins.py"
+          name="dubins_planner" output="screen">
+      <param name="use_sim_time" value="false"/>
+      <param from="$(var config_file)"/>
+  </node>
 
 </launch>

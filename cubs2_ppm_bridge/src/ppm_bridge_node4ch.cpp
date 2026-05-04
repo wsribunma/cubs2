@@ -66,8 +66,13 @@ class MinimalSubscriber : public rclcpp::Node
       };
       //m_timer  = this->create_wall_timer(100ms, get_status);
 
-      m_port.open("/dev/ttyACM0");
-      m_port.set_option(asio::serial_port_base::baud_rate(57600));
+      try {
+        m_port.open("/dev/ttyACM0");
+        m_port.set_option(asio::serial_port_base::baud_rate(57600));
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to open serial port /dev/ttyACM0: %s", e.what());
+        throw;
+      }
       for (int i = 0; i<5; i++){
         m_servo_data.data[i] = 1000;
       }  
