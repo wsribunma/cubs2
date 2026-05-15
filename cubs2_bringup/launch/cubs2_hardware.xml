@@ -2,9 +2,11 @@
 <launch>
 
   <arg name="sim"        default="false"    description="use simulated clock"/>
-  <arg name="rviz"       default="false"    description="launch rviz2 with cubs2_hw.rviz config"/> <!-- TODO: Add Rviz config for hardware-->
+  <arg name="rviz"       default="true"     description="launch rviz2 with cubs2_hw.rviz config"/>
   <arg name="joy"        default="true"     description="launch joystick node for manual control"/>
-  <arg name="controller" default="taranis"  description="transmitter type: taranis | f310 | ps4"/>
+  <arg name="transmitter" default="taranis" description="transmitter type: taranis | f310 | ps4"/>
+  <arg name="controller" default="false"    description="launch auto_controller in the background"/>
+  <arg name="planner"    default="false"    description="launch dubins planner"/>
   <arg name="log_level"  default="warn"     description="ROS logging level"/>
   <arg name="vehicle"    default="cub1"     description="vehicle id, used as ROS namespace"/>
   <arg name="config_file" default="$(find-pkg-share cubs2_bringup)/config/sportcub.yaml"/>
@@ -40,11 +42,11 @@
       </composable_node>
     </node_container>
 
-    <!-- <node pkg="cubs2_control" exec="auto_controller" name="auto_controller"
-          output="log" on_exit="shutdown">
+    <node pkg="cubs2_control" exec="auto_controller" name="auto_controller"
+          output="log" on_exit="shutdown" if="$(var controller)">
       <param name="use_sim_time" value="$(var sim)"/>
       <param name="vehicle_id"   value="$(var vehicle)"/>
-    </node> -->
+    </node>
 
     <node pkg="cubs2_ppm_bridge" exec="node4ch" name="bridge"
           output="log" on_exit="shutdown">
@@ -52,7 +54,7 @@
       <param name="coalesce_interval_ms" value="50"/>
       <param name="autorepeat_rate"      value="20.0"/>
       <param name="deadzone"             value="0.02"/>
-      <param name="controller_id"        value="$(var controller)"/>
+      <param name="controller_id"        value="$(var transmitter)"/>
       <param name="vehicle_id"           value="$(var vehicle)"/>
       <remap from="joy_throttle"      to="control_manual_throttle"/>
       <remap from="auto_joy_throttle" to="control_auto_throttle"/>
@@ -60,7 +62,7 @@
 
     <node pkg="rviz2" exec="rviz2" name="rviz2"
           output="screen" if="$(var rviz)"
-          args="-d $(find-pkg-share cubs2_bringup)/config/cubs2_hw.rviz"
+          args="-d $(find-pkg-share cubs2_rviz)/config/cubs2_hw.rviz"
           on_exit="shutdown">
       <param name="use_sim_time" value="$(var sim)"/>
     </node>
@@ -68,7 +70,7 @@
   </group>
 
   <node pkg="cubs2_planning" exec="planner_dubins.py"
-          name="dubins_planner" output="screen">
+          name="dubins_planner" output="screen" if="$(var planner)">
       <param name="use_sim_time" value="false"/>
       <param from="$(var config_file)"/>
   </node>

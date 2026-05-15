@@ -54,6 +54,8 @@ class MinimalSubscriber : public rclcpp::Node
 
       m_pub_status = this->create_publisher<std_msgs::msg::String>("status", 10);
       joy_pub_status = this->create_publisher<std_msgs::msg::UInt16MultiArray>("joy_serial_status", 10);
+      // Publishes current outerloop mode ("manual"/"auto") so RViz JoyPanel can reflect the switch position
+      outerloop_mode_pub_ = this->create_publisher<std_msgs::msg::String>("/toggle_outerloop_mode", 10);
 
 
       auto get_status =
@@ -86,7 +88,7 @@ class MinimalSubscriber : public rclcpp::Node
     // Private member methodsjoy
     void topic_callback(const sensor_msgs::msg::Joy::SharedPtr msg)
     {
-      RCLCPP_INFO(this->get_logger(), "controller id: %s", m_controller_id_param_str.c_str());
+      RCLCPP_DEBUG(this->get_logger(), "controller id: %s", m_controller_id_param_str.c_str());
       if (m_controller_id_param_str == "taranis"){
 
         m_servo_data.data[0] = std::clamp(-500.0 * msg->axes[0] + 1500.0, 1000.0, 2000.0); // joy "+1" is zero throttle , joy "-1" is full throttle
@@ -128,6 +130,18 @@ class MinimalSubscriber : public rclcpp::Node
           m_servo_data.data[3] = a_servo_data.data[3];
           m_servo_data.data[4] = a_servo_data.data[4];
         }
+      }
+
+      // Determine current switch state and publish mode change to RViz when it changes
+      bool current_is_auto = (m_controller_id_param_str == "taranis")
+                              ? (msg->axes[5] > 0)
+                              : is_auto_mode_;
+      if (current_is_auto != prev_is_auto_) {
+        prev_is_auto_ = current_is_auto;
+        std_msgs::msg::String mode_msg;
+        mode_msg.data = current_is_auto ? "auto" : "manual";
+        outerloop_mode_pub_->publish(mode_msg);
+        RCLCPP_INFO(this->get_logger(), "Outerloop mode: %s", mode_msg.data.c_str());
       }
 
       uint16_t cksum = 0;
@@ -178,6 +192,7 @@ class MinimalSubscriber : public rclcpp::Node
 
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr m_pub_status;
     rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr joy_pub_status;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr outerloop_mode_pub_;
 
     asio::io_service m_io;
     asio::serial_port m_port;
@@ -185,8 +200,9 @@ class MinimalSubscriber : public rclcpp::Node
     servo_data_t a_servo_data;
     
     // Joy button mode handling for Logitech
-    bool is_auto_mode_;
-    bool toggle_mode_switch_;
+    bool is_auto_mode_{false};
+    bool toggle_mode_switch_{false};
+    bool prev_is_auto_{false};
 
     u_int8_t m_out_buf[2048];
     rclcpp::TimerBase::SharedPtr m_timer;

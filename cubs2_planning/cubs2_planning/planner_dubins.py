@@ -130,7 +130,7 @@ class DubinsGatePlannerNode(Node):
                 self.racecourse.frame_id, self.frame_true, rclpy.time.Time()
             )
         except LookupException:
-            self.get_logger().warn("TF not available yet")
+            self.get_logger().warn("TF not available yet", throttle_duration_sec=5.0)
             return
 
         # Extract XYZ

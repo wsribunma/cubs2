@@ -22,7 +22,7 @@ class AutoControlNode(Node):
         super().__init__("auto_control")
 
         # Publishers
-        self.pub_control = self.create_publisher(AircraftControl, "/control_auto", 10)
+        self.pub_control = self.create_publisher(AircraftControl, "control_auto", 10)
 
         # Current state
         self.aileron = 0.0
